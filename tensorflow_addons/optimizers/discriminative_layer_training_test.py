@@ -111,13 +111,13 @@ def get_train_results(model):
 def zipped_permutes():
     model_fns = [toy_cnn]
     losses = [
-        tf.keras.losses.BinaryCrossentropy(from_logits=True),
+        # tf.keras.losses.BinaryCrossentropy(from_logits=True),
         tf.keras.losses.CategoricalCrossentropy(from_logits=True),
         tf.keras.losses.MeanSquaredError(),
     ]
     optimzers = [
-        tf.keras.optimizers.SGD
-        # , tf.keras.optimizers.Adam
+        # tf.keras.optimizers.SGD,
+        tf.keras.optimizers.Adam,
     ]
     return list(itertools.product(model_fns, losses, optimzers))
 
