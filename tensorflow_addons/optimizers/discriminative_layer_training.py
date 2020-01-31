@@ -242,7 +242,6 @@ class DiscriminativeWrapper(tf.keras.optimizers.Optimizer):
 
         for lr_mult_value in variable_groups.keys():
             opt = self.opt_class(learning_rate=learning_rate * lr_mult_value, **kwargs)
-            opt._grouped_variables = variable_groups[lr_mult_value]
             opt.lr_mult_value = lr_mult_value
             self.optimizer_group.append(opt)
 
