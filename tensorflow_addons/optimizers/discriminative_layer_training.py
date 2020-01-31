@@ -19,36 +19,12 @@ import numpy as np
 from typeguard import typechecked
 
 
-def apply_gradients(self, grads_and_vars, *args, **kwargs):
-    """New apply gradients function.
-    This intercepts the grads and vars, scales them, then passes them to the old apply gradients function
-
-    :TODO finish docstring
-
-    """
-
-    if self.testing_flag:
-        print("Training with layerwise learning rates")
-        self.testing_flag = False
-
-    grads = []
-    var_list = []
-
-    # scale each grad based on var's lr_mult
-    for grad, var in grads_and_vars:
-        grad = tf.math.scalar_mul(var.lr_mult, grad)
-        grads.append(grad)
-        var_list.append(var)
-
-    grads_and_vars = list(zip(grads, var_list))
-
-    return self._apply_gradients(grads_and_vars, *args, **kwargs)
-
-
 # @tf.keras.utils.register_keras_serializable(package="Addons") :TODO figure out why other classes have this wrapper
-class DiscriminativeLearning(object):
-    """Discriminative Learning Model Modifier.
 
+
+class DiscriminativeWrapper(tf.keras.optimizers.Optimizer):
+    """Discriminative Learning Model Modifier.
+    :TODO update doc to reflect new design
     Discriminative Learning is a technique that applies different learning rates to
     different layers in a model. Generally, a lower learning rate is applied to the
     layers closest to the input and a higher learning rate is applied to layers closer
@@ -78,12 +54,46 @@ class DiscriminativeLearning(object):
     """
 
     @typechecked
-    def __init__(self, model: tf.keras.Model, verbose: bool = True):
+    def __init__(
+            self,
+            base_optimizer,
+            model: tf.keras.Model,
+            learning_rate: float,
+            verbose: bool = True,
+            name="discrim_opt",
+            *args,
+            **kwargs
+    ):
+
         """Apply logic for discriminative learning to a compiled model
         :TODO finish docstring
         """
 
-        self._prepare_model(model=model, verbose=verbose)
+        super().__init__(lr=learning_rate, name=name, *args, **kwargs)
+
+        self._prepare_model(model, verbose=verbose)
+
+        self.opt_class = base_optimizer
+
+        #         self.lr_mults = []
+        #         for var in model.trainable_variables:
+        #             key = var.lr_mult
+        #             if not key in self.lr_mults:
+        #                 self.lr_mults.append(key)
+
+        variable_groups = {}
+        i = 0
+        for var in model.trainable_variables:
+            key = var.lr_mult_value
+            var.pos = i
+            variable_groups.setdefault(key, []).append(var)
+
+        self.optimizer_group = []
+
+        for lr_mult_value in variable_groups.keys():
+            opt = self.opt_class(learning_rate=learning_rate * lr_mult_value, **kwargs)
+            opt._grouped_variables = variable_groups[lr_mult_value]
+            self.optimizer_group.append(opt)
 
     def _get_layers(self, layer):
         """Helper method to access a layer's sublayers as a list or return an empty list
@@ -188,11 +198,10 @@ class DiscriminativeLearning(object):
         return np.sum([np.prod(list(var.shape)) for var in var_list])
 
     def _prepare_model(self, model, verbose=True):
-        """Prepares a compiled model for discriminative layer training
-
-        Model must be compiled first
+        """Prepares a built model for disc training
         :TODO finish docstring
         """
+        # :TODO add checks to ensure model is built
 
         layers_with_lr_mult = self._check_for_lr_mult(model, verbose=verbose)
         if len(layers_with_lr_mult) == 0:
@@ -209,12 +218,6 @@ class DiscriminativeLearning(object):
         for layer in self._get_lowest_layers(model):
             self._apply_lr_mult_to_var(layer)
 
-        # get opt, move the original apply fn to a safe place, assign new apply fn
-
-        opt = model.optimizer
-        opt._apply_gradients = opt.apply_gradients
-        opt.apply_gradients = apply_gradients.__get__(opt)
-        opt.testing_flag = True
         vars_with_lr_mult = [
             var for var in model.trainable_variables if var.lr_mult_value != 1.0
         ]
@@ -228,3 +231,32 @@ class DiscriminativeLearning(object):
                     self._compute_params(model.trainable_variables),
                 )
             )
+
+    def _get_relevant_grads_and_vars(self, grads_and_vars, opt):
+        return [grads_and_vars[var.pos] for var in opt._grouped_variables]
+
+    def _apply_gradients(self, grads_and_vars, name=None):
+        for opt in self.optimizer_group:
+            relevant_grads_and_vars = self._get_relevant_grads_and_vars(
+                grads_and_vars, opt
+            )
+            opt._apply_gradients(relevant_grads_and_vars)
+
+    def _create_slots(self, *args, **kwargs):
+        [opt._create_slots(*args, **kwargs) for opt in self.optimizer_group]
+
+    def _prepare_local(self, *args, **kwargs):
+        [opt._prepare_local(*args, **kwargs) for opt in self.optimizer_group]
+
+    def _resource_apply_dense(self, *args, **kwargs):
+        return [
+            opt._resource_apply_dense(*args, **kwargs) for opt in self.optimizer_group
+        ]
+
+    def _resource_apply_sparse(self, *args, **kwargs):
+        return [
+            opt._resource_apply_sparse(*args, **kwargs) for opt in self.optimizer_group
+        ]
+
+    def get_config(self):
+        pass
