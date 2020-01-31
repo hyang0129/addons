@@ -23,31 +23,50 @@ from typeguard import typechecked
 
 
 class DiscriminativeWrapper(tf.keras.optimizers.Optimizer):
-    """Discriminative Learning Model Modifier.
-    :TODO update doc to reflect new design
-    Discriminative Learning is a technique that applies different learning rates to
+    """Discriminative Layer Training Wrapper
+
+    Discriminative layer training is a technique that applies different learning rates to
     different layers in a model. Generally, a lower learning rate is applied to the
     layers closest to the input and a higher learning rate is applied to layers closer
     to the output. This method helps in transfer learning by quickly calibrating the head
     of a model while preserving the useful weights in the main part of the model.
 
+    You should assign the lr_mult attribute to a layer. This will multiple the learning rate
+    passed to the DiscriminativeWrapper for that layer.
+
+    This method creates a copy of the base optimizer for each unique learning rate multipler.
+
+    Performance is similar to using a single copy of the base optimizer as gradients are computed
+    only once and then passed on.
+
     Example usage
         model = tf.keras.Sequential()
         model.add(tf.keras.applications.resnet.ResNet50(include_top = False, pooling = 'avg'))
         model.add(tf.keras.layers.Dense(1, activation = 'sigmoid'))
-        DiscriminativeLearning(model)
+        model.layers[0].lr_mult = 0.01
+        opt = DiscriminativeWrapper(tf.keras.optimizers.Adam, model, learning_rate = 0.01)
+        model.compile(loss = tf.keras.losses.BinaryCrossentropy, optimizer = opt)
         model.fit(x, y)
 
     Arguments
+        base_optimizer: a class that inherits from tf.keras.optimizers.Optimizer. Do not
+            pass an instance of the class.
+
         model: tf.keras.Model, The model to be used for discriminative learning.
             It should have at least 1 layer with the attribute lr_mult. The lr_mult should
             be set to a value not equal to 1. Otherwise, you will have the exact same
             result as not using discriminative learning.
 
+        learning_rate: float, the learning rate for the model
+
         verbose: Bool, to generate a report on how many parameters are affected
 
+        *args: Args to pass to the base optimizer
+
+        **kwargs: Kwargs to pass to the base optimizer
+
     Returns
-        None - The model object passed to in the arguments will be modified
+        Optimizer - A keras optimizer
 
     References
         - [Universal Language Model Fine-tuning for Text Classification](https://arxiv.org/pdf/1801.06146.pdf)
@@ -93,6 +112,7 @@ class DiscriminativeWrapper(tf.keras.optimizers.Optimizer):
         for lr_mult_value in variable_groups.keys():
             opt = self.opt_class(learning_rate=learning_rate * lr_mult_value, **kwargs)
             opt._grouped_variables = variable_groups[lr_mult_value]
+            opt.lr_mult_value = lr_mult_value
             self.optimizer_group.append(opt)
 
     def _get_layers(self, layer):
@@ -248,15 +268,19 @@ class DiscriminativeWrapper(tf.keras.optimizers.Optimizer):
     def _prepare_local(self, *args, **kwargs):
         [opt._prepare_local(*args, **kwargs) for opt in self.optimizer_group]
 
-    def _resource_apply_dense(self, *args, **kwargs):
+    def _resource_apply_dense(self, grad, var, *args, **kwargs):
         return [
-            opt._resource_apply_dense(*args, **kwargs) for opt in self.optimizer_group
-        ]
+            opt._resource_apply_dense(grad, var, *args, **kwargs)
+            for opt in self.optimizer_group
+            if var.lr_mult_value == opt.lr_mult_value
+        ][0]
 
-    def _resource_apply_sparse(self, *args, **kwargs):
+    def _resource_apply_sparse(self, grad, var, *args, **kwargs):
         return [
-            opt._resource_apply_sparse(*args, **kwargs) for opt in self.optimizer_group
-        ]
+            opt._resource_apply_sparse(grad, var, *args, **kwargs)
+            for opt in self.optimizer_group
+            if var.lr_mult_value == opt.lr_mult_value
+        ][0]
 
     def get_config(self):
         pass
